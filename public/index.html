@@ -915,7 +915,6 @@ for (let r = 0; r <= 16; r++) {
   }
 }
 player.pos.set(spawnX, heightAt(spawnX, spawnZ) + 2, spawnZ);
-player.pitch = -0.25; // mirar ligeramente hacia abajo: se ve el terreno al empezar
 updateChunks(Math.floor(spawnX / CH), Math.floor(spawnZ / CH));
 buildHotbar();
 
@@ -931,47 +930,21 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
 document.addEventListener('mousemove', e => {
-  if (!playing) return;
-  if (document.pointerLockElement === canvas) {
-    player.yaw -= e.movementX * CONFIG.MOUSE_SENS;
-    player.pitch -= e.movementY * CONFIG.MOUSE_SENS;
-  } else if (dragLook && mouseDown) {
-    // respaldo: arrastrar con el boton pulsado rota la camara
-    mouseMoved += Math.abs(e.movementX) + Math.abs(e.movementY);
-    player.yaw -= e.movementX * CONFIG.MOUSE_SENS;
-    player.pitch -= e.movementY * CONFIG.MOUSE_SENS;
-  }
+  if (document.pointerLockElement !== canvas) return;
+  player.yaw -= e.movementX * CONFIG.MOUSE_SENS;
+  player.pitch -= e.movementY * CONFIG.MOUSE_SENS;
   player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
 });
 
-// --- Control de juego: pointer lock con respaldo "arrastrar para mirar" ---
-// El juego NO depende de que el navegador permita el pointer lock (los iframes
-// de previsualizacion suelen bloquearlo); si falla, se activa el modo respaldo.
-let playing = false;    // el juego esta activo (fisica + mirar + romper/colocar)
-let dragLook = false;   // modo respaldo activo (arrastrar con el raton para mirar)
-let mouseDown = false, mouseMoved = 0;
-
 document.addEventListener('mousedown', e => {
-  if (!playing) return;
-  mouseDown = true; mouseMoved = 0;
+  if (document.pointerLockElement !== canvas) return;
   handSwing = 1; // gesto de usar
-  if (document.pointerLockElement === canvas) {
-    if (e.button === 0) breakBlock();
-    if (e.button === 2) placeBlock();
-  }
-});
-
-document.addEventListener('mouseup', e => {
-  mouseDown = false;
-  // en modo respaldo, un clic sin arrastrar rompe/coloca
-  if (playing && dragLook && document.pointerLockElement !== canvas && mouseMoved < 6) {
-    if (e.button === 0) breakBlock();
-    if (e.button === 2) placeBlock();
-  }
+  if (e.button === 0) breakBlock();
+  if (e.button === 2) placeBlock();
 });
 
 document.addEventListener('wheel', e => {
-  if (!playing) return;
+  if (document.pointerLockElement !== canvas) return;
   player.selected = (player.selected + (e.deltaY > 0 ? 1 : -1) + HOTBAR.length) % HOTBAR.length;
   refreshHotbar(); updateHandBlock();
 }, { passive: true });
@@ -979,34 +952,12 @@ document.addEventListener('wheel', e => {
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 const overlay = document.getElementById('overlay');
-const hintEl = document.getElementById('hint');
-
-// Activa el modo respaldo: sin pointer lock, arrastrando el raton se mira.
-function enableFallback() {
-  if (dragLook) return;
-  dragLook = true;
-  hintEl.textContent = 'WASD moverse · ESPACIO saltar · F volar · 1-6 bloque · Arrastrar mirar · Clic romper/colocar';
-  playing = true;
-  overlay.classList.add('hidden');
-}
-
-function requestLock() {
-  try {
-    const p = canvas.requestPointerLock();
-    if (p && typeof p.catch === 'function') p.catch(() => enableFallback());
-  } catch (err) {
-    enableFallback(); // el iframe no permite pointer lock
-  }
-}
-
+function requestLock() { canvas.requestPointerLock(); }
 canvas.addEventListener('click', requestLock);
 overlay.addEventListener('click', requestLock);
 document.addEventListener('pointerlockchange', () => {
-  const locked = document.pointerLockElement === canvas;
-  playing = locked;
-  overlay.classList.toggle('hidden', locked);
+  overlay.classList.toggle('hidden', document.pointerLockElement === canvas);
 });
-document.addEventListener('pointerlockerror', () => enableFallback());
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -1022,9 +973,8 @@ function animate(now) {
   requestAnimationFrame(animate);
   let dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  try {
 
-  if (playing) {
+  if (document.pointerLockElement === canvas) {
     acc += dt;
     while (acc >= STEP) { physicsStep(STEP); acc -= STEP; }
     updateChunks(Math.floor(player.pos.x / CH), Math.floor(player.pos.z / CH));
@@ -1062,10 +1012,6 @@ function animate(now) {
 
   updateInfo(dt);
   renderer.render(scene, camera);
-  } catch (err) {
-    // no romper el bucle: mostrar el error en el HUD
-    document.getElementById('state').textContent = 'ERROR: ' + (err && err.message ? err.message : err);
-  }
 }
 
 requestAnimationFrame(animate);
