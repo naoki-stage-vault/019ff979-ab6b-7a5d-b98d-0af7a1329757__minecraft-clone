@@ -824,7 +824,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 
 const scene = new THREE.Scene();
-const sky = new THREE.Color(0x8ecdf5);
+const sky = new THREE.Color(0x87b7e0);
 scene.background = sky;
 scene.fog = new THREE.Fog(sky, CONFIG.VIEW_DISTANCE * CH * 0.7, CONFIG.VIEW_DISTANCE * CH * 1.6);
 
@@ -842,7 +842,7 @@ atlasTex.magFilter = THREE.NearestFilter;
 atlasTex.minFilter = THREE.NearestMipmapNearestFilter;
 atlasTex.generateMipmaps = true;
 atlasTex.colorSpace = THREE.SRGBColorSpace;
-const matOpaque = new THREE.MeshLambertMaterial({ map: atlasTex, vertexColors: true });
+const matOpaque = new THREE.MeshLambertMaterial({ map: atlasTex, vertexColors: true, side: THREE.DoubleSide });
 
 const waterTex = new THREE.CanvasTexture(waterCanvas);
 waterTex.magFilter = THREE.NearestFilter;
