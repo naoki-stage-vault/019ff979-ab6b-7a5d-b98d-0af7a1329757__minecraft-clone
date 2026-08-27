@@ -711,7 +711,7 @@ function physicsStep(dt) {
 
   // límites del mundo: respawn si caes al vacío
   if (p.pos.y < -40) p.pos.y = heightAt(p.pos.x, p.pos.z) + 3;
-  if (p.pos.y > WH) { p.pos.y = WH; p.vel.y = 0; }
+  if (p.pos.y > WH + 112) { p.pos.y = WH + 112; p.vel.y = 0; } // techo de vuelo alto
 }
 
 /* ============================================================================
@@ -821,7 +821,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 const scene = new THREE.Scene();
 const sky = new THREE.Color(0x8ecdf5);
 scene.background = sky;
-scene.fog = new THREE.Fog(sky, CONFIG.VIEW_DISTANCE * CH * 0.55, CONFIG.VIEW_DISTANCE * CH * 1.15);
+scene.fog = new THREE.Fog(sky, CONFIG.VIEW_DISTANCE * CH * 0.7, CONFIG.VIEW_DISTANCE * CH * 1.6);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 
@@ -834,15 +834,15 @@ scene.add(sun);
 // Materiales compartidos (un material por tipo, no por bloque)
 const atlasTex = new THREE.CanvasTexture(buildAtlas());
 atlasTex.magFilter = THREE.NearestFilter;
-atlasTex.minFilter = THREE.NearestFilter;
-atlasTex.generateMipmaps = false;
+atlasTex.minFilter = THREE.NearestMipmapNearestFilter;
+atlasTex.generateMipmaps = true;
 atlasTex.colorSpace = THREE.SRGBColorSpace;
 const matOpaque = new THREE.MeshLambertMaterial({ map: atlasTex, vertexColors: true });
 
 const waterTex = new THREE.CanvasTexture(waterCanvas);
 waterTex.magFilter = THREE.NearestFilter;
-waterTex.minFilter = THREE.NearestFilter;
-waterTex.generateMipmaps = false;
+waterTex.minFilter = THREE.NearestMipmapNearestFilter;
+waterTex.generateMipmaps = true;
 waterTex.wrapS = waterTex.wrapT = THREE.RepeatWrapping;
 waterTex.colorSpace = THREE.SRGBColorSpace;
 const matWater = new THREE.MeshLambertMaterial({
@@ -857,6 +857,44 @@ const highlight = new THREE.LineSegments(
 );
 highlight.visible = false;
 scene.add(highlight);
+
+// --- Mano en primera persona: muestra el bloque seleccionado ---
+const handGroup = new THREE.Group();
+const handMatCache = new Map(); // id de bloque -> [6 materiales]
+
+function handMaterialsFor(id) {
+  if (handMatCache.has(id)) return handMatCache.get(id);
+  const info = BLOCK_INFO[id];
+  const side = new THREE.CanvasTexture(TEX[info.tex.side]);
+  const top = new THREE.CanvasTexture(TEX[info.tex.top] || TEX[info.tex.side]);
+  for (const t of [side, top]) {
+    t.magFilter = THREE.NearestFilter;
+    t.minFilter = THREE.NearestMipmapNearestFilter;
+    t.generateMipmaps = true;
+    t.colorSpace = THREE.SRGBColorSpace;
+  }
+  const mk = map => new THREE.MeshLambertMaterial({ map });
+  // orden de caras del BoxGeometry: +x, -x, +y, -y, +z, -z
+  const mats = [mk(side), mk(side), mk(top), mk(top), mk(side), mk(side)];
+  handMatCache.set(id, mats);
+  return mats;
+}
+
+const handMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(0.42, 0.42, 0.42),
+  handMaterialsFor(HOTBAR[player.selected])
+);
+handMesh.position.set(0.55, -0.55, -0.85);
+handMesh.rotation.set(0.15, 0.6, 0);
+handGroup.add(handMesh);
+handGroup.renderOrder = 100; // se dibuja por encima del agua
+camera.add(handGroup);
+scene.add(camera); // necesario para que los hijos de la cámara se rendericen
+let handSwing = 0, handBob = 0;
+
+function updateHandBlock() {
+  handMesh.material = handMaterialsFor(HOTBAR[player.selected]);
+}
 
 // Mundo inicial
 noise = new SimplexNoise((Math.random() * 1e9) | 0);
@@ -882,7 +920,7 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Space') e.preventDefault();
   if (e.code === 'KeyF' && !e.repeat) { player.flying = !player.flying; player.vel.y = 0; }
   const m = /^Digit([1-6])$/.exec(e.code);
-  if (m) { player.selected = +m[1] - 1; refreshHotbar(); }
+  if (m) { player.selected = +m[1] - 1; refreshHotbar(); updateHandBlock(); }
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -895,6 +933,7 @@ document.addEventListener('mousemove', e => {
 
 document.addEventListener('mousedown', e => {
   if (document.pointerLockElement !== canvas) return;
+  handSwing = 1; // gesto de usar
   if (e.button === 0) breakBlock();
   if (e.button === 2) placeBlock();
 });
@@ -902,7 +941,7 @@ document.addEventListener('mousedown', e => {
 document.addEventListener('wheel', e => {
   if (document.pointerLockElement !== canvas) return;
   player.selected = (player.selected + (e.deltaY > 0 ? 1 : -1) + HOTBAR.length) % HOTBAR.length;
-  refreshHotbar();
+  refreshHotbar(); updateHandBlock();
 }, { passive: true });
 
 document.addEventListener('contextmenu', e => e.preventDefault());
@@ -953,6 +992,18 @@ function animate(now) {
   // animación sutil del agua (desplazamiento de la textura)
   waterTex.offset.x -= dt * 0.03;
   waterTex.offset.y += dt * 0.02;
+
+  // mano: balanceo al caminar + gesto al usar
+  const spd = Math.hypot(player.vel.x, player.vel.z);
+  handBob += dt * (2.5 + spd * 1.8);
+  handMesh.position.x = 0.55 + Math.sin(handBob) * 0.014;
+  handMesh.position.y = -0.55 + Math.abs(Math.cos(handBob)) * 0.018;
+  if (handSwing > 0) {
+    handSwing = Math.max(0, handSwing - dt * 4.5);
+    handMesh.rotation.x = 0.15 + Math.sin(handSwing * Math.PI) * 1.1;
+  } else {
+    handMesh.rotation.x = 0.15;
+  }
 
   updateInfo(dt);
   renderer.render(scene, camera);
