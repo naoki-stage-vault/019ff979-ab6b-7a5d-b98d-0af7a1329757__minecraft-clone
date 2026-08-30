@@ -518,7 +518,10 @@ function makeGeom(a) {
   g.setAttribute('uv', new THREE.Float32BufferAttribute(a.uv, 2));
   g.setAttribute('color', new THREE.Float32BufferAttribute(a.col, 3));
   // índice de triángulos: 2 por cara (4 vértices -> 6 índices)
-  g.setIndex(new Uint16Array(a.idx));
+  // Debe ser un BufferAttribute: three r158 guarda los arrays tipados crudos
+  // (sin .type/.bytesPerElement) y gl.drawElements dibuja 0 triángulos,
+  // dejando la escena vacía (solo se ve el cielo).
+  g.setIndex(new THREE.BufferAttribute(new Uint16Array(a.idx), 1));
   return g;
 }
 
