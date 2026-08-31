@@ -34,6 +34,8 @@
   #overlay .play { margin-top:28px; font-size:18px; color:#fff; background:#2e7d32; padding:10px 36px; border-radius:8px;
                    box-shadow:0 4px 14px rgba(46,125,50,.5); animation:pulse 1.6s infinite; }
   @keyframes pulse { 0%,100%{transform:scale(1);} 50%{transform:scale(1.06);} }
+  #underwater { position:fixed; inset:0; pointer-events:none; z-index:1; opacity:0;
+                background:radial-gradient(ellipse at center, rgba(8,48,96,.06) 25%, rgba(8,48,120,.55) 100%); }
 </style>
 </head>
 <body>
@@ -86,9 +88,9 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
    ============================================================================ */
 const CONFIG = {
   CHUNK_SIZE: 16,          // chunk de 16x16x16 bloques
-  WORLD_HEIGHT: 16,        // altura del mundo en bloques
+  WORLD_HEIGHT: 28,        // altura del mundo en bloques
   VIEW_DISTANCE: 4,        // radio de carga de chunks (en chunks)
-  SEA_LEVEL: 4,            // nivel del mar
+  SEA_LEVEL: 9,            // nivel del mar
   GRAVITY: 26,             // aceleración de gravedad
   JUMP_SPEED: 8.6,         // velocidad inicial del salto
   WALK_SPEED: 4.6,         // velocidad caminando (m/s)
@@ -228,22 +230,30 @@ const jit = (rng, amt) => (rng() * 2 - 1) * amt; // variación aleatoria
 
 const TEX = {}; // nombre -> canvas
 
-// Pasto: cara superior (verde con ruido y motas oscuras)
+// Pasto: cara superior (verdes en parches orgánicos)
 TEX.grass_top = buildTexture(101, (x, y, rng) => {
-  const n = jit(rng, 0.16);
-  const r = clamp255(96 * (1 + n)), g = clamp255(158 * (1 + n)), b = clamp255(62 * (1 + n));
-  return rng() < 0.10 ? [r * 0.6, g * 0.6, b * 0.6] : [r, g, b];
+  const p = Math.sin(x * 0.9 + y * 1.3) * Math.cos(x * 0.4 - y * 0.7);
+  let r = 96, g = 158, b = 62;
+  if (p > 0.55)      { r = 114; g = 174; b = 74; }  // parche claro
+  else if (p < -0.5) { r = 80;  g = 136; b = 48; }  // parche oscuro
+  const n = jit(rng, 0.1);
+  return [clamp255(r * (1 + n)), clamp255(g * (1 + n)), clamp255(b * (1 + n))];
 });
 
-// Pasto: cara lateral (tierra con flequillo verde arriba)
+// Pasto: cara lateral (tierra con césped que "gotea" de forma irregular)
 TEX.grass_side = buildTexture(102, (x, y, rng) => {
-  const fringe = 2 + Math.floor(rng() * 2); // 2-3 filas de césped
+  const drip = Math.round(Math.sin(x * 1.9) * 1.5 + Math.cos(x * 3.1) * 1.5 + 3.5); // 1-6 por columna
+  const fringe = 4 + drip + (rng() < 0.5 ? 1 : 0); // 5-11 filas, borde irregular
   if (y < fringe) {
-    const n = jit(rng, 0.18);
-    return [clamp255(98 * (1 + n)), clamp255(160 * (1 + n)), clamp255(64 * (1 + n))];
+    const n = jit(rng, 0.16);
+    const depth = y / fringe; // 0 arriba (verde vivo) -> 1 abajo (raíz)
+    const r = clamp255((96 - 30 * depth) * (1 + n));
+    const g = clamp255((160 - 34 * depth) * (1 + n));
+    const b = clamp255((64 - 20 * depth) * (1 + n));
+    return [r, g, b];
   }
   const n = jit(rng, 0.14);
-  return [clamp255(128 * (1 + n)), clamp255(98 * (1 + n)), clamp255(62 * (1 + n))];
+  return [clamp255(132 * (1 + n)), clamp255(102 * (1 + n)), clamp255(64 * (1 + n))];
 });
 
 // Tierra: marrón con motas oscuras
@@ -299,11 +309,21 @@ TEX.leaves = buildTexture(108, (x, y, rng) => {
   return [clamp255(r * (1 + n)), clamp255(g * (1 + n)), clamp255(b * (1 + n))];
 });
 
-// Agua: azul semitransparente (textura aparte, se anima desplazándola)
-const waterCanvas = buildTexture(109, (x, y, rng) => {
-  const n = jit(rng, 0.06);
-  const light = rng() < 0.12 ? 1.18 : 1;
-  return [clamp255(56 * light * (1 + n)), clamp255(116 * light * (1 + n)), clamp255(178 * light * (1 + n)), 205];
+// Agua: superficie (brillante, con crestas; se anima desplazando la textura)
+const waterTopCanvas = buildTexture(109, (x, y, rng) => {
+  const n = jit(rng, 0.08);
+  const wave = Math.sin(x * 1.4 + y * 0.9) + Math.cos(x * 0.7 - y * 1.6);
+  let r = 64, g = 134, b = 200;
+  if (wave > 1.25)       { r = 92;  g = 162; b = 220; } // cresta más clara
+  else if (wave < -1.25) { r = 44;  g = 102; b = 166; } // valle más oscuro
+  return [clamp255(r * (1 + n)), clamp255(g * (1 + n)), clamp255(b * (1 + n)), 255];
+});
+
+// Agua: cuerpo (paredes bajo la superficie, más oscuro y estático)
+const waterBodyCanvas = buildTexture(110, (x, y, rng) => {
+  const n = jit(rng, 0.07);
+  const deep = rng() < 0.1 ? 0.85 : 1;
+  return [clamp255(38 * deep * (1 + n)), clamp255(84 * deep * (1 + n)), clamp255(138 * deep * (1 + n)), 255];
 });
 
 // --- Atlas: todas las texturas opacas en un solo canvas (una fila) ---
@@ -360,7 +380,8 @@ class Chunk {
     this.cx = cx; this.cz = cz;
     this.blocks = new Uint8Array(CH * CH * WH);
     this.meshOpaque = null;
-    this.meshWater = null;
+    this.meshWaterTop = null;
+    this.meshWaterBody = null;
   }
 }
 
@@ -400,10 +421,11 @@ function worldSet(wx, wy, wz, id) {
 
 // --- Generación procedural del terreno ---
 function heightAt(wx, wz) {
-  const n = fbm3(wx * 0.012, 0, wz * 0.012, 4);       // colinas y valles
-  const d = fbm3(wx * 0.06, 3.7, wz * 0.06, 2);       // detalle
-  let h = CONFIG.SEA_LEVEL + Math.round(n * 4.0 + d * 1.5);
-  return Math.max(2, Math.min(WH - 2, h));
+  const cont = fbm3(wx * 0.005, 0, wz * 0.005, 3);    // continentes / océanos
+  const hills = fbm3(wx * 0.022, 5.1, wz * 0.022, 4); // colinas
+  const det = fbm3(wx * 0.09, 9.7, wz * 0.09, 2);     // detalle fino
+  let h = CONFIG.SEA_LEVEL + Math.round(cont * 9.0 + hills * 2.6 + det * 0.9);
+  return Math.max(2, Math.min(WH - 4, h));
 }
 
 // hash determinista para árboles y variaciones por columna
@@ -412,6 +434,71 @@ function hash01(x, z) {
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
+}
+
+// --- Árboles: decoración separada de la generación de terreno ---
+// Las copas pueden cruzar bordes de chunk: se escriben en cualquier chunk
+// cargado y se re-decoran los vecinos cuando carga uno nuevo.
+const dirtyRebuild = new Set(); // chunks cuyo mesh hay que reconstruir
+
+function setWorldBlock(wx, wy, wz, id) {
+  if (wy < 0 || wy >= WH) return;
+  const cx = Math.floor(wx / CH), cz = Math.floor(wz / CH);
+  const chunk = chunks.get(key(cx, cz));
+  if (!chunk) return;
+  chunk.blocks[idx(wx - cx * CH, wy, wz - cz * CH)] = id;
+  dirtyRebuild.add(key(cx, cz));
+}
+
+function setWorldBlockIfAir(wx, wy, wz, id) {
+  if (wy < 0 || wy >= WH) return;
+  const cx = Math.floor(wx / CH), cz = Math.floor(wz / CH);
+  const chunk = chunks.get(key(cx, cz));
+  if (!chunk) return;
+  const i = idx(wx - cx * CH, wy, wz - cz * CH);
+  if (chunk.blocks[i] !== B.AIR) return;
+  chunk.blocks[i] = id;
+  dirtyRebuild.add(key(cx, cz));
+}
+
+function placeTree(wx, h, wz) {
+  const trunk = 4 + Math.floor(hash01(wx * 7 + 3, wz * 13 + 5) * 3); // 4-6
+  for (let t = 1; t <= trunk; t++) setWorldBlock(wx, h + t, wz, B.LOG);
+  const top = h + trunk;
+  // copa principal: esfera achatada por abajo, sin huecos
+  for (let dy = -2; dy <= 2; dy++) {
+    const yr = dy >= 0 ? dy : dy * 0.8;
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const d = Math.sqrt(dx * dx + dz * dz + yr * yr);
+        if (d > 2.35) continue;
+        if (dy === 2 && Math.abs(dx) === 2 && Math.abs(dz) === 2) continue; // esquinas de la punta
+        setWorldBlockIfAir(wx + dx, top + dy, wz + dz, B.LEAVES);
+      }
+    }
+  }
+  // falda inferior: anillo sobresaliente para que la base no quede "pelada"
+  for (let dx = -3; dx <= 3; dx++) {
+    for (let dz = -3; dz <= 3; dz++) {
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 2.1 || d > 2.8) continue;
+      setWorldBlockIfAir(wx + dx, top - 2, wz + dz, B.LEAVES);
+    }
+  }
+}
+
+// Coloca los árboles de un chunk (idempotente: no pisa bloques ya colocados)
+function decorateChunk(chunk) {
+  const ox = chunk.cx * CH, oz = chunk.cz * CH;
+  for (let lx = 0; lx < CH; lx++) {
+    for (let lz = 0; lz < CH; lz++) {
+      const wx = ox + lx, wz = oz + lz;
+      const h = heightAt(wx, wz);
+      if (h > CONFIG.SEA_LEVEL + 1 && h + 8 < WH && hash01(wx, wz) < 0.014) {
+        placeTree(wx, h, wz);
+      }
+    }
+  }
 }
 
 function generateChunk(cx, cz) {
@@ -443,26 +530,6 @@ function generateChunk(cx, cz) {
         chunkSet(chunk, lx, y, lz, id);
       }
 
-      // árboles sobre terreno seco
-      if (h > CONFIG.SEA_LEVEL + 1 && hash01(wx, wz) < 0.014 && h + 7 < WH) {
-        const trunk = 4 + Math.floor(hash01(wx * 7 + 3, wz * 13 + 5) * 2); // 4-5
-        for (let t = 1; t <= trunk; t++) chunkSet(chunk, lx, h + t, lz, B.LOG);
-        const top = h + trunk;
-        for (let dy = -2; dy <= 2; dy++) {
-          for (let dx = -2; dx <= 2; dx++) {
-            for (let dz = -2; dz <= 2; dz++) {
-              const d = Math.sqrt(dx * dx + dz * dz + (dy >= 0 ? dy * dy : (dy + 1) * (dy + 1)));
-              if (d > 2.4) continue;
-              const yy = top + dy;
-              if (yy < 0 || yy >= WH) continue;
-              if (dy === 2 && Math.abs(dx) === 2 && Math.abs(dz) === 2) continue; // esquinas
-              if (chunkGet(chunk, lx + dx, yy, lz + dz) === B.AIR) {
-                chunkSet(chunk, lx + dx, yy, lz + dz, B.LEAVES);
-              }
-            }
-          }
-        }
-      }
     }
   }
 
@@ -491,7 +558,7 @@ const FACES = [
 const FACE_UV = [[0, 0], [1, 0], [1, 1], [0, 1]]; // abajo-izq, abajo-der, arriba-der, arriba-izq
 const WATER_UV = { u0: 0, v0: 0, u1: 1, v1: 1 };
 
-function emitFace(arrays, f, bx, by, bz, uvRect) {
+function emitFace(arrays, f, bx, by, bz, uvRect, tint = 1) {
   const face = FACES[f];
   const n = face.dir;
   const shade = face.shade;
@@ -505,7 +572,7 @@ function emitFace(arrays, f, bx, by, bz, uvRect) {
       uvRect.u0 + (uvRect.u1 - uvRect.u0) * uvf[0],
       uvRect.v0 + (uvRect.v1 - uvRect.v0) * uvf[1]
     );
-    arrays.col.push(shade, shade, shade); // sombreado por orientación de la cara
+    arrays.col.push(shade * tint, shade * tint, shade * tint); // sombreado por orientación (+ tinte por bloque)
   }
   // dos triángulos por cara (sin esto WebGL triangula solo la mitad -> "solo esquinas")
   arrays.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
@@ -531,17 +598,23 @@ function clearChunkMeshes(chunk) {
     chunk.meshOpaque.geometry.dispose();
     chunk.meshOpaque = null;
   }
-  if (chunk.meshWater) {
-    scene.remove(chunk.meshWater);
-    chunk.meshWater.geometry.dispose();
-    chunk.meshWater = null;
+  if (chunk.meshWaterTop) {
+    scene.remove(chunk.meshWaterTop);
+    chunk.meshWaterTop.geometry.dispose();
+    chunk.meshWaterTop = null;
+  }
+  if (chunk.meshWaterBody) {
+    scene.remove(chunk.meshWaterBody);
+    chunk.meshWaterBody.geometry.dispose();
+    chunk.meshWaterBody = null;
   }
 }
 
 function buildChunkMesh(chunk) {
   clearChunkMeshes(chunk);
   const op = { pos: [], uv: [], col: [], nor: [], idx: [] };
-  const wa = { pos: [], uv: [], col: [], nor: [], idx: [] };
+  const wt = { pos: [], uv: [], col: [], nor: [], idx: [] }; // superficie del agua
+  const wb = { pos: [], uv: [], col: [], nor: [], idx: [] }; // cuerpo del agua
   const ox = chunk.cx * CH, oz = chunk.cz * CH;
 
   for (let y = 0; y < WH; y++) {
@@ -555,18 +628,21 @@ function buildChunkMesh(chunk) {
           for (let f = 0; f < 6; f++) {
             const d = FACES[f].dir;
             if (worldGet(wx + d[0], y + d[1], wz + d[2]) !== B.WATER) {
-              emitFace(wa, f, wx, y, wz, WATER_UV); // agua: textura propia
+              // superficie (cara superior) y cuerpo (laterales/fondo) por separado
+              if (f === 2) emitFace(wt, f, wx, y, wz, WATER_UV);
+              else emitFace(wb, f, wx, y, wz, WATER_UV);
             }
           }
         } else {
           const info = BLOCK_INFO[id];
+          const tint = id === B.GRASS ? 0.92 + hash01(wx, wz) * 0.16 : 1; // variar el verde del pasto
           for (let f = 0; f < 6; f++) {
             const d = FACES[f].dir;
             const nb = worldGet(wx + d[0], y + d[1], wz + d[2]);
             // face culling: solo se dibuja la cara si el vecino es aire o agua
             if (nb === B.AIR || nb === B.WATER) {
               const cell = atlasCells[info.tex[FACES[f].role]];
-              emitFace(op, f, wx, y, wz, cell);
+              emitFace(op, f, wx, y, wz, cell, tint);
             }
           }
         }
@@ -575,9 +651,11 @@ function buildChunkMesh(chunk) {
   }
 
   if (op.pos.length) chunk.meshOpaque = new THREE.Mesh(makeGeom(op), matOpaque);
-  if (wa.pos.length) chunk.meshWater = new THREE.Mesh(makeGeom(wa), matWater);
+  if (wt.pos.length) chunk.meshWaterTop = new THREE.Mesh(makeGeom(wt), matWaterTop);
+  if (wb.pos.length) chunk.meshWaterBody = new THREE.Mesh(makeGeom(wb), matWaterBody);
   if (chunk.meshOpaque) scene.add(chunk.meshOpaque);
-  if (chunk.meshWater) scene.add(chunk.meshWater);
+  if (chunk.meshWaterTop) scene.add(chunk.meshWaterTop);
+  if (chunk.meshWaterBody) scene.add(chunk.meshWaterBody);
 }
 
 function rebuildChunk(cx, cz) {
@@ -597,16 +675,38 @@ function unloadChunk(cx, cz) {
 // Carga los chunks dentro de VIEW_DISTANCE y descarga los lejanos (mundo infinito)
 function updateChunks(pcx, pcz) {
   const R = CONFIG.VIEW_DISTANCE;
+  const fresh = [];
   for (let dz = -R; dz <= R; dz++) {
     for (let dx = -R; dx <= R; dx++) {
       if (dx * dx + dz * dz > R * R) continue; // radio circular
-      if (!chunks.has(key(pcx + dx, pcz + dz))) generateChunk(pcx + dx, pcz + dz);
+      const k = key(pcx + dx, pcz + dz);
+      if (!chunks.has(k)) { generateChunk(pcx + dx, pcz + dz); fresh.push([pcx + dx, pcz + dz]); }
     }
   }
   const R2 = R + 2;
   for (const chunk of chunks.values()) {
     const dx = chunk.cx - pcx, dz = chunk.cz - pcz;
     if (dx * dx + dz * dz > R2 * R2) unloadChunk(chunk.cx, chunk.cz);
+  }
+  // árboles: decorar los chunks nuevos y sus vecinos (las copas cruzan bordes)
+  if (fresh.length) {
+    dirtyRebuild.clear();
+    const seen = new Set();
+    for (const [fx, fz] of fresh) {
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const k = key(fx + dx, fz + dz);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          const ch = chunks.get(k);
+          if (ch) decorateChunk(ch);
+        }
+      }
+    }
+    for (const k of dirtyRebuild) {
+      const m = k.split(',');
+      rebuildChunk(+m[0], +m[1]);
+    }
   }
 }
 
@@ -822,14 +922,19 @@ function updateInfo(dt) {
    10. BUCLE PRINCIPAL, ESCENA Y EVENTOS
    ============================================================================ */
 const canvas = document.getElementById('game');
+const underwaterEl = document.getElementById('underwater');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 
 const scene = new THREE.Scene();
 const sky = new THREE.Color(0x87b7e0);
+const UW_FOG = new THREE.Color(0x0a4a72);          // niebla azul bajo el agua
+const FOG_NEAR = CONFIG.VIEW_DISTANCE * CH * 0.7;
+const FOG_FAR = CONFIG.VIEW_DISTANCE * CH * 1.6;
 scene.background = sky;
-scene.fog = new THREE.Fog(sky, CONFIG.VIEW_DISTANCE * CH * 0.7, CONFIG.VIEW_DISTANCE * CH * 1.6);
+scene.fog = new THREE.Fog(sky, FOG_NEAR, FOG_FAR);
+let underwaterAmt = 0; // 0..1 inmersión de la cámara (niebla + tinte)
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 
@@ -847,15 +952,27 @@ atlasTex.generateMipmaps = true;
 atlasTex.colorSpace = THREE.SRGBColorSpace;
 const matOpaque = new THREE.MeshLambertMaterial({ map: atlasTex, vertexColors: true, side: THREE.DoubleSide });
 
-const waterTex = new THREE.CanvasTexture(waterCanvas);
-waterTex.magFilter = THREE.NearestFilter;
-waterTex.minFilter = THREE.NearestMipmapNearestFilter;
-waterTex.generateMipmaps = true;
-waterTex.wrapS = waterTex.wrapT = THREE.RepeatWrapping;
-waterTex.colorSpace = THREE.SRGBColorSpace;
-const matWater = new THREE.MeshLambertMaterial({
-  map: waterTex, vertexColors: true,
-  transparent: true, opacity: 0.75, depthWrite: false, side: THREE.DoubleSide,
+const waterTopTex = new THREE.CanvasTexture(waterTopCanvas);
+waterTopTex.magFilter = THREE.NearestFilter;
+waterTopTex.minFilter = THREE.NearestMipmapNearestFilter;
+waterTopTex.generateMipmaps = true;
+waterTopTex.wrapS = waterTopTex.wrapT = THREE.RepeatWrapping;
+waterTopTex.colorSpace = THREE.SRGBColorSpace;
+const matWaterTop = new THREE.MeshPhongMaterial({
+  map: waterTopTex, vertexColors: true,
+  transparent: true, opacity: 0.66, depthWrite: false, side: THREE.DoubleSide,
+  specular: new THREE.Color(0x3d5a80), shininess: 90,
+});
+
+const waterBodyTex = new THREE.CanvasTexture(waterBodyCanvas);
+waterBodyTex.magFilter = THREE.NearestFilter;
+waterBodyTex.minFilter = THREE.NearestMipmapNearestFilter;
+waterBodyTex.generateMipmaps = true;
+waterBodyTex.wrapS = waterBodyTex.wrapT = THREE.RepeatWrapping;
+waterBodyTex.colorSpace = THREE.SRGBColorSpace;
+const matWaterBody = new THREE.MeshLambertMaterial({
+  map: waterBodyTex, vertexColors: true,
+  transparent: true, opacity: 0.9, depthWrite: true, side: THREE.DoubleSide,
 });
 
 // Resaltado del bloque apuntado (wireframe)
@@ -997,9 +1114,18 @@ function animate(now) {
     highlight.visible = false;
   }
 
-  // animación sutil del agua (desplazamiento de la textura)
-  waterTex.offset.x -= dt * 0.03;
-  waterTex.offset.y += dt * 0.02;
+  // animación sutil del agua: solo la superficie se desplaza
+  waterTopTex.offset.x -= dt * 0.035;
+  waterTopTex.offset.y += dt * 0.02;
+
+  // efecto subacuático: niebla azul densa + tinte de pantalla (profundidad real)
+  const eyeY = player.pos.y + CONFIG.EYE_HEIGHT;
+  const submerged = eyeY < CONFIG.SEA_LEVEL + 1;
+  underwaterAmt = THREE.MathUtils.clamp(underwaterAmt + (submerged ? dt * 4 : -dt * 4), 0, 1);
+  underwaterEl.style.opacity = underwaterAmt.toFixed(3);
+  scene.fog.color.copy(sky).lerp(UW_FOG, underwaterAmt);
+  scene.fog.near = FOG_NEAR + (3 - FOG_NEAR) * underwaterAmt;
+  scene.fog.far = FOG_FAR + (30 - FOG_FAR) * underwaterAmt;
 
   // mano: balanceo al caminar + gesto al usar
   const spd = Math.hypot(player.vel.x, player.vel.z);
